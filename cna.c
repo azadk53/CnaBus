@@ -4337,3 +4337,9 @@ LOGFILE="can_$(date +%Y%m%d_%H%M%S).txt"
 can_20240610_143022.txt
 
 */
+
+/*
+Phase A — Lesson 7
+Package Management
+sudo apt-get update
+*/
