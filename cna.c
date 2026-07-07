@@ -4085,3 +4085,255 @@ Math$((a + b))
 Silence output      > /dev/null 2>&1
 Exit with error     exit 1
 */
+
+/*
+Phase A — Lesson 6
+Shell Scripting Advanced
+
+Right now you run your scripts like:
+bash./setup_can.sh
+But real scripts accept input directly on the command line:
+./setup_can.sh vcan0 500
+./send_frames.sh 101 DEADBEEF 5
+#!/bin/bash
+echo "First argument:  $1"
+echo "Second argument: $2"
+echo "Third argument:  $3"
+echo "All arguments:   $@"
+echo "How many args:   $#"
+Variable        Meaning
+$1 $2 $3        Individual arguments
+$@              All arguments as a list
+$#              Number of arguments
+$0              Script name itself
+
+#!/bin/bash
+
+# Check argument count
+if [ $# -ne 2 ]; then
+    echo "Usage: $0 <can_id> <data>"
+    echo "Example: $0 101 DEADBEEF"
+    exit 1
+fi
+
+can_id=$1
+data=$2
+
+echo "Sending frame ID=$can_id Data=$data"
+cansend vcan0 ${can_id}#${data}
+
+./send.sh           # forgot arguments
+Usage: ./send.sh <can_id> <data>
+Example: ./send.sh 101 DEADBEEF
+#!/bin/bash
+
+# Check if a regular file exists
+if [ -f "can_log.txt" ]; then
+    echo "Log file exists"
+else
+    echo "Log file not found"
+fi
+
+# Check if a directory exists
+if [ -d "/home/azad/can_projects" ]; then
+    echo "Project folder exists"
+fi
+
+# Check if a device file exists
+if [ -e "/dev/ttyS0" ]; then
+    echo "Serial port available"
+fi
+
+# Check if a file is executable
+if [ -x "./can_logger" ]; then
+    echo "Logger is executable"
+fi
+
+-f      file exists and is a regular file
+-d      directory exists
+-e      anything exists (file, device, dir)
+-x      file is executable
+-r      file is readable
+-w      file is writable
+-s      file exists and is not empty
+
+Every Linux command returns an exit code:
+
+0 = success
+Non-zero = failure
+
+#!/bin/bash
+
+# $? holds the exit code of the last command
+ip link show vcan0 > /dev/null 2>&1
+if [ $? -eq 0 ]; then
+    echo "vcan0 is up"
+else
+    echo "vcan0 is not available"
+fi
+
+# Even cleaner way
+if ip link show vcan0 > /dev/null 2>&1; then
+    echo "vcan0 is up"
+else
+    echo "vcan0 is not available"
+fi
+
+set -e — Stop on Any Error
+#!/bin/bash
+set -e
+
+crontab -e
+# ┌──── minute (0-59)
+# │  ┌──── hour (0-23)
+# │  │  ┌──── day of month (1-31)
+# │  │  │  ┌──── month (1-12)
+# │  │  │  │  ┌──── day of week (0-6, 0=Sunday)
+# │  │  │  │  │
+# *  *  *  *  *  command
+
+Example
+# Run every minute
+* * * * * /home/azad/setup_can.sh
+
+# Run every day at 8am
+0 8 * * * /home/azad/backup_logs.sh
+
+# Run every hour
+0 * * * * /home/azad/check_sensors.sh
+
+# Run every 5 minutes
+(*)/5 * * * * /home/azad/log_status.sh
+
+# Run at boot
+@reboot /home/azad/setup_can.sh
+
+nano can_tool.sh
+#!/bin/bash
+set -e
+
+# ── Configuration ──────────────────────────────
+INTERFACE="vcan0"
+LOG_DIR="$HOME/can_logs"
+LOGFILE="$LOG_DIR/can_$(date +%Y%m%d_%H%M%S).txt"
+
+# ── Functions ──────────────────────────────────
+usage() {
+    echo "Usage: $0 <command> [options]"
+    echo ""
+    echo "Commands:"
+    echo "  setup              Setup vcan0 interface"
+    echo "  send <id> <data>   Send a single CAN frame"
+    echo "  log <seconds>      Log CAN traffic for N seconds"
+    echo ""
+    echo "Examples:"
+    echo "  $0 setup"
+    echo "  $0 send 101 DEADBEEF"
+    echo "  $0 log 10"
+    exit 1
+}
+
+check_interface() {
+    if ! ip link show $INTERFACE > /dev/null 2>&1; then
+        echo "ERROR: $INTERFACE is not up. Run '$0 setup' first."
+        exit 1
+    fi
+}
+
+setup_can() {
+    echo "Setting up $INTERFACE..."
+    sudo modprobe vcan
+    if ! ip link show $INTERFACE > /dev/null 2>&1; then
+        sudo ip link add dev $INTERFACE type vcan
+    fi
+    sudo ip link set up $INTERFACE
+    echo "$INTERFACE is ready."
+}
+
+send_frame() {
+    if [ $# -ne 2 ]; then
+        echo "ERROR: send needs <id> and <data>"
+        echo "Example: $0 send 101 DEADBEEF"
+        exit 1
+    fi
+    check_interface
+    local id=$1
+    local data=$2
+    cansend $INTERFACE ${id}#${data}
+    echo "Sent: ID=0x${id} Data=${data}"
+}
+
+log_traffic() {
+    if [ $# -ne 1 ]; then
+        echo "ERROR: log needs <seconds>"
+        echo "Example: $0 log 10"
+        exit 1
+    fi
+    check_interface
+    local duration=$1
+
+    # Create log directory if not exists
+    if [ ! -d "$LOG_DIR" ]; then
+        mkdir -p "$LOG_DIR"
+        echo "Created log directory: $LOG_DIR"
+    fi
+
+    echo "Logging $INTERFACE for ${duration}s → $LOGFILE"
+    timeout $duration candump $INTERFACE > $LOGFILE || true
+    local count=$(wc -l < $LOGFILE)
+    echo "Done. Captured $count frames → $LOGFILE"
+}
+
+# ── Main ───────────────────────────────────────
+if [ $# -eq 0 ]; then
+    usage
+fi
+
+command=$1
+shift    # remove first argument, rest are now $1 $2 etc
+
+case $command in
+    setup)
+        setup_can
+        ;;
+    send)
+        send_frame $@
+        ;;
+    log)
+        log_traffic $@
+        ;;
+    *)
+        echo "ERROR: Unknown command '$command'"
+        usage
+        ;;
+esac
+chmod 755 can_tool.sh
+./can_tool.sh setup
+./can_tool.sh send 101 DEADBEEF
+./can_periodic &
+./can_tool.sh log 5
+
+Output:
+Logging vcan0 for 5s → /home/azad/can_logs/can_20240610_143022.txt
+Done. Captured 52 frames → /home/azad/can_logs/can_20240610_143022.txt
+
+
+case $command in
+    setup)
+        setup_can
+        ;;
+    send)
+        send_frame $@
+        ;;
+    *)
+        echo "Unknown command"
+        ;;
+esac
+
+command=$1
+shift
+timeout 5 candump vcan0
+LOGFILE="can_$(date +%Y%m%d_%H%M%S).txt"
+can_20240610_143022.txt
+
+*/
