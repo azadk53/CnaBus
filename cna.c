@@ -4438,6 +4438,114 @@ UP,LOWER_UP   →  interface is active
 ping google.com          # ping by hostname
 ping 192.168.1.1         # ping by IP address
 ping -c 4 google.com     # send only 4 packets then stop
+PING google.com (142.250.74.46)
+64 bytes from 142.250.74.46: icmp_seq=1 ttl=115 time=12.3 ms
+64 bytes from 142.250.74.46: icmp_seq=2 ttl=115 time=11.8 ms
+
+Field           Meaning
+icmp_seq        Packet sequence number
+ttl             Time to live — how many network hops
+time            Round trip time in milliseconds
 
 
+ssh azad@192.168.1.50       # connect to device at that IP
+ssh pi@raspberrypi.local    # connect to Raspberry Pi by hostname
+
+exit
+
+# Copy file TO remote device
+scp can_logger pi@192.168.1.50:/home/pi/
+
+# Copy file FROM remote device
+scp pi@192.168.1.50:/home/pi/can_log.txt ./
+
+# Copy entire folder
+scp -r can_projects/ pi@192.168.1.50:/home/pi/
+
+ss -tuln
+
+Flag            Meaning
+-t              TCP connections
+-u              UDP connections
+-l              listening ports only
+-n              show numbers not names
+
+Netid  State   Recv-Q  Send-Q  Local Address:Port
+tcp    LISTEN  0       128     0.0.0.0:22
+tcp    LISTEN  0       128     0.0.0.0:80
+
+# Simple GET request
+curl https://google.com
+
+# Get just the response headers
+curl -I https://google.com
+
+# POST data to a server (like sending sensor data)
+curl -X POST https://httpbin.org/post \
+     -H "Content-Type: application/json" \
+     -d '{"sensor":"RPM","value":1500}'
+
+# Save response to a file
+curl -o response.txt https://httpbin.org/get
+
+wget https://example.com/file.tar.gz
+
+hostname              # your device's name on the network
+hostname -I           # your IP address
+nslookup google.com   # look up IP address of a hostname
+
+# 1. Find your device's IP
+ping raspberrypi.local -c 2
+
+# 2. SSH into it
+ssh pi@192.168.1.50
+
+# 3. On the device — check network is up
+ip addr show
+
+# 4. Exit back to your PC
+exit
+
+# 5. Copy your CAN logger to the device
+scp can_logger pi@192.168.1.50:/home/pi/
+
+# 6. SSH back in and run it
+ssh pi@192.168.1.50
+./can_logger &
+
+# 1. See all your network interfaces
+ip addr show
+
+# 2. Check your IP address
+hostname -I
+
+# 3. Ping Google — confirm internet works
+ping -c 4 google.com
+
+# 4. Ping your WSL2 host (Windows machine)
+ping -c 2 $(hostname -I | awk '{print $1}' | sed 's/\.[0-9]*$/.1/')
+
+# 5. See active connections
+ss -tuln
+
+# 6. Make an HTTP request
+curl -s https://httpbin.org/get | head -20
+
+# 7. Send simulated sensor data
+curl -X POST https://httpbin.org/post \
+     -H "Content-Type: application/json" \
+     -d '{"sensor":"RPM","value":1500,"unit":"rpm"}'
+
+Command             Purpose
+ip addr show        Show IP addresses of all interfaces
+ip link show        Show network interfaces and status
+ping -c N host      Test if host is reachable
+ssh user@host       Connect to remote Linux device
+scp file user@host:path Copy file to remote device
+scp user@host:file .    Copy file from remote device
+ss -tuln             Show active network connections
+curl url            Make HTTP request
+curl -X POST -d data url   Send data to server
+wget url                Download a file
+hostname -I             Show your IP address
 */
