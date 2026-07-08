@@ -4342,4 +4342,102 @@ can_20240610_143022.txt
 Phase A — Lesson 7
 Package Management
 sudo apt-get update
+sudo apt-get install can-utils
+sudo apt-get install gcc
+sudo apt-get install -y can-utils    # -y skips the yes/no confirmation
+sudo apt-get remove can-utils
+sudo apt-get purge can-utils
+sudo apt-get upgrade
+apt-cache search can
+apt-cache search serial port
+apt-cache search i2c
+apt-cache search can | grep -i bus
+apt-cache show can-utils
+dpkg -l
+dpkg -l | grep can
+dpkg -l | grep gcc
+dpkg -l | grep can-utils
+ii  can-utils  2020.02.04  amd64  CAN bus utilities
+ii = installed and working. rc = removed but config files remain.
+sudo apt-get autoremove
+# Build tools
+sudo apt-get install build-essential    # gcc, make, and other essentials
+sudo apt-get install cmake              # build system
+
+# Hardware interfaces
+sudo apt-get install i2c-tools          # I2C utilities
+sudo apt-get install python3-smbus      # I2C from Python
+
+# Debugging
+sudo apt-get install gdb                # C debugger
+sudo apt-get install strace             # trace system calls
+
+# CAN Bus (already installed)
+sudo apt-get install can-utils
+
+# Network tools (preview of next lesson)
+sudo apt-get install net-tools          # ifconfig and others
+sudo apt-get install nmap               # network scanner
+# 1. Update package list
+sudo apt-get update
+
+# 2. Search for i2c related packages
+apt-cache search i2c
+
+# 3. Get info about can-utils
+apt-cache show can-utils
+
+# 4. Confirm can-utils is installed
+dpkg -l | grep can-utils
+
+# 5. Check what gcc version you have
+gcc --version
+
+# 6. Install build-essential if not already there
+sudo apt-get install -y build-essential
+
+# 7. Clean up
+sudo apt-get autoremove
+Command                     Purpose
+sudo apt-get update         Refresh package list
+sudo apt-get install pkg    Install a package
+sudo apt-get remove pkg     Remove a package
+sudo apt-get purge pkg      Remove including config files
+sudo apt-get upgrade        Update all installed packages
+sudo apt-get autoremove     Remove unused dependencies
+apt-cache search keyword    Search available packages
+apt-cache show pkg          Show package details
+dpkg -l                     List installed packages
+dpkg -l | grep pkg          Check if specific package installed
+
+*/
+
+/*
+Lesson 8
+Networking Basics
+
+# Show all interfaces
+ip link show
+
+# Show IP addresses
+ip addr show
+
+# Show specific interface
+ip addr show eth0
+output
+2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP>
+    link/ether 00:11:22:33:44:55
+    inet 192.168.1.100/24 brd 192.168.1.255
+
+eth0          →  interface name
+UP,LOWER_UP   →  interface is active
+00:11:22:...  →  MAC address (hardware address)
+192.168.1.100 →  IP address
+/24           →  subnet mask (means 255.255.255.0)
+
+ping google.com          # ping by hostname
+ping 192.168.1.1         # ping by IP address
+ping -c 4 google.com     # send only 4 packets then stop
+
+
 */
