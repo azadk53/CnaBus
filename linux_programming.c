@@ -551,3 +551,297 @@ Save errno immediately  Before any other call overwrites it
 die() helper            Fatal errors — print and exit
 warn() helper           Non-fatal — log and continue
 */
+/*
+Lesson B3
+Processes in C
+
+What is a Process in Code?
+In Lesson A4 you managed processes from the terminal — ps, kill, &. Now we go one level deeper — creating and managing processes from C code.
+
+Main embedded program
+├── spawns a logging process
+├── spawns a sensor reading process
+└── watches both — restarts if one crashes
+
+Function        What it does
+fork()          Creates a copy of the current process
+exec()          Replaces current process with a new program
+wait()          Parent waits for child to finish
+
+pid_t pid = fork();
+Parent process          Child process
+──────────────          ─────────────
+pid = child's PID       pid = 0
+pid_t pid = fork();
+
+if (pid < 0) {
+    perror("fork failed");
+    exit(1);
+} else if (pid == 0) {
+    // This code runs in the CHILD
+    printf("I am the child\n");
+} else {
+    // This code runs in the PARENT
+    printf("I am the parent, child PID = %d\n", pid);
+}
+
+#include <sys/wait.h>
+
+int status;
+wait(&status);    // blocks until any child finishes
+
+// Check how child exited
+if (WIFEXITED(status)) {
+    printf("Child exited with code: %d\n", WEXITSTATUS(status));
+}
+
+Macro                    Meaning
+WIFEXITED(status)       Did child exit normally?WEXITSTATUS(status)     What exit code did it return?WIFSIGNALED(status)    Was child killed by a signal?WTERMSIG(status)       Which signal killed it?
+
+#include <unistd.h>
+
+char *args[] = {"candump", "vcan0", NULL};  // NULL terminates
+execvp("candump", args);
+
+// If execvp returns, it failed
+perror("execvp failed");
+
+pid_t pid = fork();
+
+if (pid == 0) {
+    // Child — replace with new program
+    char *args[] = {"candump", "vcan0", NULL};
+    execvp("candump", args);
+    perror("exec failed");
+    exit(1);
+} else {
+    // Parent — wait for child
+    int status;
+    wait(&status);
+    printf("candump finished\n");
+}
+
+nano processes.c
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/wait.h>
+#include <sys/types.h>
+#include <errno.h>
+
+// ── Worker: simulate a sensor reading task ────────────
+void sensor_worker(int sensor_id, int readings) {
+    printf("[Worker %d] PID=%d started\n",
+           sensor_id, getpid());
+
+    for (int i = 1; i <= readings; i++) {
+        // Simulate reading a sensor value
+        int value = 100 + (sensor_id * 10) + i;
+        printf("[Worker %d] Reading %d: value=%d\n",
+               sensor_id, i, value);
+        sleep(1);
+    }
+
+    printf("[Worker %d] Done. Exiting.\n", sensor_id);
+    exit(0);
+}
+
+// ── Spawn a worker process ────────────────────────────
+pid_t spawn_worker(int sensor_id, int readings) {
+    pid_t pid = fork();
+
+    if (pid < 0) {
+        perror("fork failed");
+        return -1;
+    }
+
+    if (pid == 0) {
+        // Child process — run the worker
+        sensor_worker(sensor_id, readings);
+        // sensor_worker calls exit() so we never reach here
+    }
+
+    // Parent — return child PID
+    printf("[Parent] Spawned worker %d with PID=%d\n",
+           sensor_id, pid);
+    return pid;
+}
+
+// ── Wait for all children ─────────────────────────────
+void wait_for_all(pid_t pids[], int count) {
+    for (int i = 0; i < count; i++) {
+        int status;
+        pid_t done = waitpid(pids[i], &status, 0);
+
+        if (done < 0) {
+            perror("waitpid failed");
+            continue;
+        }
+
+        if (WIFEXITED(status)) {
+            printf("[Parent] Worker PID=%d finished "
+                   "with exit code %d\n",
+                   done, WEXITSTATUS(status));
+        } else if (WIFSIGNALED(status)) {
+            printf("[Parent] Worker PID=%d killed "
+                   "by signal %d\n",
+                   done, WTERMSIG(status));
+        }
+    }
+}
+
+// ── Run an external command ───────────────────────────
+void run_command(char *cmd, char *args[]) {
+    pid_t pid = fork();
+
+    if (pid < 0) {
+        perror("fork failed");
+        return;
+    }
+
+    if (pid == 0) {
+        // Child — exec the command
+        execvp(cmd, args);
+        // Only reaches here if exec failed
+        fprintf(stderr, "Failed to run '%s': %s\n",
+                cmd, strerror(errno));
+        exit(1);
+    }
+
+    // Parent — wait for command to finish
+    int status;
+    waitpid(pid, &status, 0);
+    if (WIFEXITED(status)) {
+        printf("Command '%s' exited with code %d\n",
+               cmd, WEXITSTATUS(status));
+    }
+}
+
+// ── Main ─────────────────────────────────────────────
+int main() {
+    printf("=== Process Manager Demo ===\n");
+    printf("[Parent] PID=%d\n\n", getpid());
+
+    // ── Test 1: Spawn multiple sensor workers ─────────
+    printf("--- Test 1: Parallel sensor workers ---\n");
+
+    pid_t workers[3];
+    workers[0] = spawn_worker(1, 2);  // sensor 1, 2 readings
+    workers[1] = spawn_worker(2, 2);  // sensor 2, 2 readings
+    workers[2] = spawn_worker(3, 2);  // sensor 3, 2 readings
+
+    printf("[Parent] All workers spawned. Waiting...\n\n");
+
+    wait_for_all(workers, 3);
+    printf("\nAll workers done.\n\n");
+
+    // ── Test 2: Run external command ──────────────────
+    printf("--- Test 2: Run external command ---\n");
+    char *args[] = {"echo", "Hello from child process!", NULL};
+    run_command("echo", args);
+
+    // ── Test 3: Run ls command ────────────────────────
+    printf("\n--- Test 3: List files via child ---\n");
+    char *ls_args[] = {"ls", "-l", "/tmp", NULL};
+    run_command("ls", ls_args);
+
+    printf("\n=== Done ===\n");
+    return 0;
+}
+
+gcc processes.c -o processes
+./processes
+
+output
+=== Process Manager Demo ===
+[Parent] PID=1234
+
+--- Test 1: Parallel sensor workers ---
+[Parent] Spawned worker 1 with PID=1235
+[Parent] Spawned worker 2 with PID=1236
+[Parent] Spawned worker 3 with PID=1237
+[Parent] All workers spawned. Waiting...
+
+[Worker 1] PID=1235 started
+[Worker 1] Reading 1: value=111
+[Worker 2] PID=1236 started
+[Worker 2] Reading 1: value=121
+[Worker 3] PID=1237 started
+[Worker 3] Reading 1: value=131
+[Worker 1] Reading 2: value=112
+[Worker 2] Reading 2: value=122
+[Worker 3] Reading 2: value=132
+[Worker 1] Done. Exiting.
+[Worker 2] Done. Exiting.
+[Worker 3] Done. Exiting.
+[Parent] Worker PID=1235 finished with exit code 0
+[Parent] Worker PID=1236 finished with exit code 0
+[Parent] Worker PID=1237 finished with exit code 0
+
+All workers done.
+
+--- Test 2: Run external command ---
+Hello from child process!
+Command 'echo' exited with code 0
+
+--- Test 3: List files via child ---
+total 12
+-rw-r--r-- 1 azad azad 22 Jun 10 test_output.txt
+Command 'ls' exited with code 0
+
+=== Done ===
+
+main process (PID=1234)
+│
+├── fork() ──► child 1 (PID=1235) → sensor_worker(1)
+│                                    reads 2 values
+│                                    exit(0)
+│
+├── fork() ──► child 2 (PID=1236) → sensor_worker(2)
+│                                    reads 2 values
+│                                    exit(0)
+│
+├── fork() ──► child 3 (PID=1237) → sensor_worker(3)
+│                                    reads 2 values
+│                                    exit(0)
+│
+└── wait_for_all() ─── blocks until all 3 finish
+
+Function            Purpose
+fork()              Create child process — copy of current
+getpid()            Get current process PID
+getppid()           Get parent process PID
+wait(&status)       Wait for any child
+waitpid(pid, &status, 0)        Wait for specific child
+execvp(cmd, args[])     Replace process with new program
+exit(code)          Exit current process with code
+WIFEXITED(status)       Check if child exited normally
+WEXITSTATUS(status)     Get child's exit code
+
+main supervisor process
+├── fork → exec → CAN logger      (records all bus traffic)
+├── fork → exec → sensor reader   (reads I2C/SPI sensors)
+├── fork → exec → data uploader   (sends data to server)
+└── watchdog loop:
+      wait for any child to exit
+      if child crashed → restart it
+
+
+Before fork():     one process
+                        │
+                      fork()
+                     /      \
+After fork():   Parent      Child
+                (pid>0)     (pid==0)
+                  │              │
+               waits          does work
+                  │              │
+               wait()        exit(0)
+                  │
+             continues
+
+
+
+*/
