@@ -845,3 +845,262 @@ After fork():   Parent      Child
 
 
 */
+
+/*
+Lesson B4
+Signals in C
+
+Signals are the Linux way of sending a notification to a process — like a tap on the shoulder telling it something happened.
+
+Signal  Number     Default action       Sent by
+SIGINT  2           Terminate           Ctrl+C
+SIGTERM 15          Terminate           kill PID
+SIGKILL 9           Force kill          kill -9 PID
+SIGSEGV 11          Crash              Bad memory access
+SIGALRM 14          Terminate           Timer expiry
+SIGCHLD 17          Ignore           Child process exits
+SIGHUP  1           Terminate       Terminal closed
+SIGUSR1 10          Terminate          User defined
+SIGUSR2 12          Terminate           User defined
+
+// 1. Handle it — run your own function
+signal(SIGINT, my_handler);
+
+// 2. Ignore it — do nothing
+signal(SIGINT, SIG_IGN);
+
+// 3. Restore default behavior
+signal(SIGINT, SIG_DFL);
+
+void handle_exit(int sig) {
+    running = 0;
+}
+signal(SIGINT, handle_exit);
+
+The handler function must always have this signature:
+void handler_name(int sig)
+
+
+#include <signal.h>
+
+struct sigaction sa;
+sa.sa_handler = my_handler;    // your handler function
+sigemptyset(&sa.sa_mask);      // don't block other signals
+sa.sa_flags = 0;               // no special flags
+
+sigaction(SIGINT, &sa, NULL);
+
+signal(SIGALRM, timeout_handler);
+alarm(5);    // send SIGALRM after 5 seconds
+
+Process A sends SIGUSR1 to Process B
+→ Process B interprets it as "reload config"
+→ Process B interprets SIGUSR2 as "dump status"
+
+nano signals.c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <signal.h>
+#include <sys/types.h>
+
+// ── Global state ──────────────────────────────────────
+volatile int running    = 1;
+volatile int usr1_count = 0;
+volatile int alarm_fired = 0;
+int frame_count = 0;
+
+// ── Signal handlers ───────────────────────────────────
+
+// Ctrl+C — clean shutdown
+void handle_sigint(int sig) {
+    printf("\n[SIGINT] Ctrl+C received — shutting down...\n");
+    running = 0;
+}
+
+// SIGTERM — from kill command
+void handle_sigterm(int sig) {
+    printf("\n[SIGTERM] Terminate signal received\n");
+    running = 0;
+}
+
+// SIGUSR1 — custom: print status
+void handle_sigusr1(int sig) {
+    usr1_count++;
+    // Note: printf is not safe in signal handlers
+    // in real code use a flag and print in main loop
+    // here we use it for demonstration only
+    printf("\n[SIGUSR1] Status request #%d received\n",
+           usr1_count);
+    printf("  frames processed: %d\n", frame_count);
+    printf("  still running: %s\n", running ? "yes" : "no");
+}
+
+// SIGALRM — timer expired
+void handle_sigalrm(int sig) {
+    alarm_fired = 1;
+}
+
+// SIGSEGV — catch crash (demonstration only)
+void handle_sigsegv(int sig) {
+    fprintf(stderr, "[SIGSEGV] Segmentation fault caught!\n");
+    fprintf(stderr, "Bad memory access — check your pointers\n");
+    exit(1);
+}
+
+// ── Setup all signal handlers ─────────────────────────
+void setup_signals() {
+    struct sigaction sa;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+
+    sa.sa_handler = handle_sigint;
+    sigaction(SIGINT, &sa, NULL);
+
+    sa.sa_handler = handle_sigterm;
+    sigaction(SIGTERM, &sa, NULL);
+
+    sa.sa_handler = handle_sigusr1;
+    sigaction(SIGUSR1, &sa, NULL);
+
+    sa.sa_handler = handle_sigalrm;
+    sigaction(SIGALRM, &sa, NULL);
+
+    sa.sa_handler = handle_sigsegv;
+    sigaction(SIGSEGV, &sa, NULL);
+
+    printf("Signal handlers registered.\n");
+}
+
+// ── Main ─────────────────────────────────────────────
+int main() {
+    printf("=== Signal Demo ===\n");
+    printf("My PID = %d\n", getpid());
+    printf("Try these from another terminal:\n");
+    printf("  kill -USR1 %d   (print status)\n", getpid());
+    printf("  kill -TERM %d   (terminate)\n", getpid());
+    printf("  Ctrl+C          (interrupt)\n\n");
+
+    setup_signals();
+
+    // Set a 10 second alarm
+    alarm(10);
+    printf("10 second alarm set.\n\n");
+
+    // Main processing loop
+    printf("Running... (press Ctrl+C to stop)\n");
+    while (running) {
+        // Simulate processing work
+        frame_count++;
+
+        // Check if alarm fired
+        if (alarm_fired) {
+            alarm_fired = 0;
+            printf("[ALARM] 10 seconds elapsed! "
+                   "Frames processed: %d\n", frame_count);
+            alarm(10);    // reset alarm for next 10 seconds
+        }
+
+        sleep(1);
+    }
+
+    // Cleanup
+    printf("\nShutting down cleanly.\n");
+    printf("Total frames processed: %d\n", frame_count);
+    return 0;
+}
+
+
+gcc signals.c -o signals
+./signals
+
+output
+=== Signal Demo ===
+My PID = 1234
+Try these from another terminal:
+  kill -USR1 1234   (print status)
+  kill -TERM 1234   (terminate)
+  Ctrl+C            (interrupt)
+
+Signal handlers registered.
+10 second alarm set.
+
+Running... (press Ctrl+C to stop)
+
+Window 2 — test each signal:
+
+# Send SIGUSR1 — print status
+kill -USR1 1234
+
+# Wait a few seconds, send again
+kill -USR1 1234
+
+# Finally terminate it
+kill -TERM 1234
+
+ouput window 1
+Running... (press Ctrl+C to stop)
+
+[SIGUSR1] Status request #1 received
+  frames processed: 3
+  still running: yes
+
+[SIGUSR1] Status request #2 received
+  frames processed: 7
+  still running: yes
+
+[ALARM] 10 seconds elapsed! Frames processed: 10
+
+[SIGTERM] Terminate signal received
+
+Shutting down cleanly.
+Total frames processed: 11
+
+#include <signal.h>
+
+// Send signal to a specific PID
+kill(target_pid, SIGUSR1);
+
+// Send signal to yourself
+kill(getpid(), SIGUSR1);
+
+// Send signal to all processes in your group
+kill(0, SIGTERM);
+
+// Simple assignments
+running = 0;
+flag = 1;
+
+// Write to file descriptor directly
+write(fd, "msg\n", 4);
+
+printf(...)      // not signal safe
+malloc(...)      // not signal safe
+fopen(...)       // not signal safe
+
+// Handler — just sets a flag
+void handle_sigusr1(int sig) {
+    print_status = 1;    // just set flag
+}
+
+// Main loop — checks flag and acts
+while (running) {
+    if (print_status) {
+        print_status = 0;
+        printf("Status: frames=%d\n", frame_count);  // safe here
+    }
+    // do other work
+}
+
+Signal      Embedded use
+SIGINT / SIGTERM    Clean shutdown — flush buffers, close devices
+SIGALRM     Watchdog timer — restart if no heartbeat
+SIGUSR1     Reload config without restarting
+SIGUSR2     Dump debug info to log file
+SIGCHLD     Detect when a worker process crashes
+SIGSEGV     Catch crash, log state before dying
+
+
+
+*/
