@@ -1420,3 +1420,310 @@ Compile flag        -lpthread
 
 
 */
+
+/*
+Lesson B6
+Pipes and IPC (Inter-Process Communication)
+
+can_logger process        sensor_reader process
+──────────────────        ────────────────────
+frame_buffer              sensor_data
+(private memory)          (private memory)
+      │                         │
+      └──────── IPC ────────────┘
+              (pipe, socket,
+               shared memory...)
+
+
+Process A          pipe          Process B
+─────────    ──────────────►    ─────────
+write end                       read end
+
+
+Method          Best for
+Pipe            One-way data stream between related processes
+Named pipe (FIFO)   One-way stream between unrelated processes
+Unix socket     Two-way communication between processes
+Shared memory   Fastest — direct memory sharing
+Message queue   Structured messages between processes
+
+
+
+int fd[2];
+pipe(fd);
+// fd[0] = read end
+// fd[1] = write end
+
+int fd[2];
+pipe(fd);         // create pipe before fork
+
+pid_t pid = fork();
+
+if (pid == 0) {
+    // Child — writer
+    close(fd[0]);              // close unused read end
+    write(fd[1], "hello", 5);
+    close(fd[1]);
+    exit(0);
+} else {
+    // Parent — reader
+    close(fd[1]);              // close unused write end
+    char buf[10];
+    read(fd[0], buf, 5);
+    printf("Received: %s\n", buf);
+    close(fd[0]);
+    wait(NULL);
+}
+
+
+# Create a named pipe from terminal
+mkfifo /tmp/can_pipe
+or
+mkfifo("/tmp/can_pipe", 0666);
+
+// Writer process
+int fd = open("/tmp/can_pipe", O_WRONLY);
+write(fd, data, len);
+
+// Reader process (different program)
+int fd = open("/tmp/can_pipe", O_RDONLY);
+read(fd, buf, len);
+
+Key property — open() on a FIFO blocks until both ends are connected. Writer waits for reader, reader waits for writer.
+
+Practical Program — Two Programs Communicating
+We'll build two separate programs:
+
+pipe_writer.c — sends simulated sensor data
+pipe_reader.c — receives and displays it
+
+nano pipe_writer.c
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <signal.h>
+#include <time.h>
+#include <sys/stat.h>
+
+#define PIPE_PATH "/tmp/can_pipe"
+
+volatile int running = 1;
+void handle_exit(int sig) { running = 0; }
+
+long get_ms() {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+int main() {
+    signal(SIGINT, handle_exit);
+
+    // Create named pipe if it doesn't exist
+    if (mkfifo(PIPE_PATH, 0666) < 0) {
+        // Already exists — that's fine
+        printf("Using existing pipe: %s\n", PIPE_PATH);
+    } else {
+        printf("Created pipe: %s\n", PIPE_PATH);
+    }
+
+    printf("Waiting for reader to connect...\n");
+
+    // Open pipe for writing — blocks until reader connects
+    int fd = open(PIPE_PATH, O_WRONLY);
+    if (fd < 0) {
+        perror("Failed to open pipe");
+        return 1;
+    }
+
+    printf("Reader connected. Sending sensor data...\n");
+    printf("Press Ctrl+C to stop\n\n");
+
+    // Simulate sensor data
+    int can_ids[] = {0x101, 0x102, 0x300};
+    int values[]  = {800, 90, 32};
+    int count     = 3;
+    int seq       = 0;
+
+    char buf[128];
+
+    while (running) {
+        int idx = seq % count;
+
+        // Format: "timestamp,id,value\n"
+        int len = snprintf(buf, sizeof(buf),
+                  "%ld,%03X,%d\n",
+                  get_ms(),
+                  can_ids[idx],
+                  values[idx]);
+
+        int written = write(fd, buf, len);
+        if (written < 0) {
+            perror("Pipe write failed");
+            break;
+        }
+
+        printf("[Writer] Sent: ID=0x%03X  Value=%d\n",
+               can_ids[idx], values[idx]);
+
+        // Slowly change values
+        values[0] += 50;    // RPM increases
+        if (values[0] > 3000) values[0] = 800;
+        values[1] += 1;     // Temp increases
+        if (values[1] > 105) values[1] = 90;
+
+        seq++;
+        sleep(1);
+    }
+
+    close(fd);
+    printf("\n[Writer] Stopped.\n");
+    return 0;
+}
+
+nano pipe_reader.c
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <signal.h>
+#include <sys/stat.h>
+
+#define PIPE_PATH "/tmp/can_pipe"
+
+volatile int running = 1;
+void handle_exit(int sig) { running = 0; }
+
+// Decode CAN ID to signal name
+const char* decode_id(int id) {
+    switch(id) {
+        case 0x101: return "EngineRPM";
+        case 0x102: return "EngineTemp";
+        case 0x300: return "TirePressure";
+        default:    return "Unknown";
+    }
+}
+
+int main() {
+    signal(SIGINT, handle_exit);
+
+    printf("=== Pipe Reader ===\n");
+    printf("Opening pipe: %s\n", PIPE_PATH);
+    printf("Waiting for writer to connect...\n");
+
+    // Open pipe for reading — blocks until writer connects
+    int fd = open(PIPE_PATH, O_RDONLY);
+    if (fd < 0) {
+        perror("Failed to open pipe");
+        return 1;
+    }
+
+    printf("Writer connected. Receiving data...\n\n");
+    printf("%-14s %-8s %-16s %s\n",
+           "Timestamp", "ID", "Signal", "Value");
+    printf("─────────────────────────────────────────\n");
+
+    char buf[128];
+    int  frame_count = 0;
+
+    while (running) {
+        // Read one line at a time
+        int i = 0;
+        char c;
+
+        while (running && i < (int)sizeof(buf)-1) {
+            int n = read(fd, &c, 1);
+            if (n <= 0) {
+                // Writer closed pipe
+                printf("\n[Reader] Writer disconnected\n");
+                running = 0;
+                break;
+            }
+            buf[i++] = c;
+            if (c == '\n') break;
+        }
+        buf[i] = '\0';
+
+        if (!running) break;
+
+        // Parse "timestamp,id,value\n"
+        long timestamp;
+        int  id, value;
+
+        if (sscanf(buf, "%ld,%X,%d",
+                   &timestamp, &id, &value) == 3) {
+            frame_count++;
+            printf("%-14ld 0x%03X   %-16s %d\n",
+                   timestamp, id,
+                   decode_id(id), value);
+        }
+    }
+
+    close(fd);
+    printf("\n[Reader] Stopped. Total frames: %d\n",
+           frame_count);
+    return 0;
+}
+
+gcc pipe_writer.c -o pipe_writer
+gcc pipe_reader.c -o pipe_reader
+
+window 1
+
+./pipe_reader
+
+=== Pipe Reader ===
+Opening pipe: /tmp/can_pipe
+Waiting for writer to connect...
+
+window 2
+./pipe_writer
+
+Created pipe: /tmp/can_pipe
+Waiting for reader to connect...
+Writer connected. Sending sensor data...
+
+[Writer] Sent: ID=0x101  Value=800
+[Writer] Sent: ID=0x102  Value=90
+[Writer] Sent: ID=0x300  Value=32
+[Writer] Sent: ID=0x101  Value=850
+
+Writer connected. Receiving data...
+
+Timestamp      ID       Signal           Value
+─────────────────────────────────────────
+12345678       0x101    EngineRPM        800
+12345679       0x102    EngineTemp       90
+12345680       0x300    TirePressure     32
+12345681       0x101    EngineRPM        850
+
+rm /tmp/can_pipe
+
+pipe_writer                /tmp/can_pipe              pipe_reader
+───────────                ─────────────              ───────────
+snprintf(buf)              kernel buffer              read() byte by byte
+write(fd, buf)  ─────────►    data    ──────────────► sscanf(buf)
+"12345,101,800\n"                                     parse + print
+
+Pipes vs Named Pipes Summary
+Feature         Anonymous Pipe      Named Pipe (FIFO)
+Created with    pipe(fd)            mkfifo(path, mode)
+Works between   Parent + child only Any two processes
+Has a file path No                  Yes (/tmp/can_pipe)
+Persists on diskNoYes (until deleted)
+Direction       One way             One way
+Use case        fork + pipe pattern Separate programs
+
+Concept                         Code
+Create anonymous pipepipe       (fd)
+Create named pipe             mkfifo("/tmp/name", 0666)
+Write to pipe               write(fd, buf, len)
+Read from pipe              read(fd, buf, len)
+Close pipe end              close(fd[0]) or close(fd[1])
+Remove named pipe           unlink("/tmp/name") or rm
+*/
