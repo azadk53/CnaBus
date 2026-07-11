@@ -1104,3 +1104,319 @@ SIGSEGV     Catch crash, log state before dying
 
 
 */
+
+/*
+Lesson B5
+Threads with pthreads
+
+Process                          Thread
+───────                          ──────
+separate memory space            shares memory with other threads
+created with fork()              created with pthread_create()
+heavy — slow to create           light — fast to create
+independent — crash stays local  crash can affect whole program
+CAN logger vs sensor reader      RPM reader + Temp reader together
+
+Your CAN logger program
+├── Thread 1: receive CAN frames (blocking read)
+├── Thread 2: write frames to file
+└── Thread 3: print live stats every second
+
+#include <pthread.h>
+
+gcc program.c -o program -lpthread
+
+Function            Purpose
+pthread_create()    Start a new thread
+pthread_join()      Wait for thread to finish
+pthread_exit()      Exit current thread
+pthread_self()      Get current thread ID
+pthread_mutex_lock()    Lock a mutex
+pthread_mutex_unlock()  Unlock a mutex
+
+pthread_t thread;    // thread identifier
+
+pthread_create(&thread, NULL, my_function, arg);
+
+&thread      →  stores thread ID here
+NULL         →  default thread attributes
+my_function  →  function to run in new thread
+arg          →  argument to pass to the function (or NULL)
+
+void *my_function(void *arg) {
+    // thread code here
+    return NULL;
+}
+
+pthread_join(thread, NULL);
+
+Thread 1: reads frame_count (value = 5)
+Thread 2: reads frame_count (value = 5)
+Thread 1: adds 1, writes 6
+Thread 2: adds 1, writes 6   ← should be 7!
+
+pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+
+// Thread 1
+pthread_mutex_lock(&mutex);    // lock — only one thread enters
+frame_count++;                 // safe now
+pthread_mutex_unlock(&mutex);  // unlock — other threads can enter
+
+// Thread 2
+pthread_mutex_lock(&mutex);    // waits if Thread 1 holds lock
+frame_count++;
+pthread_mutex_unlock(&mutex);
+
+
+nano threads.c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <signal.h>
+#include <pthread.h>
+#include <time.h>
+
+#define MAX_FRAMES 1000
+#define FRAME_SIZE 64
+
+// ── Shared data structure ─────────────────────────────
+typedef struct {
+    int  id;
+    char data[FRAME_SIZE];
+    long timestamp;
+} Frame;
+
+// ── Shared buffer ─────────────────────────────────────
+Frame    frame_buffer[MAX_FRAMES];
+int      frame_count  = 0;
+int      frames_written = 0;
+volatile int running  = 1;
+
+// ── Mutex to protect shared data ─────────────────────
+pthread_mutex_t buffer_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+// ── Signal handler ────────────────────────────────────
+void handle_exit(int sig) {
+    running = 0;
+}
+
+// ── Get timestamp in milliseconds ────────────────────
+long get_ms() {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+// ── Thread 1: Simulate receiving CAN frames ───────────
+void *receiver_thread(void *arg) {
+    printf("[Receiver] Thread started\n");
+
+    int can_ids[] = {0x101, 0x200, 0x300, 0x102};
+    int id_count  = 4;
+    int seq       = 0;
+
+    while (running) {
+        // Simulate receiving a CAN frame every 200ms
+        usleep(200000);
+
+        Frame f;
+        f.id        = can_ids[seq % id_count];
+        f.timestamp = get_ms();
+        snprintf(f.data, FRAME_SIZE,
+                 "DE AD BE EF %02X", seq & 0xFF);
+
+        // Lock buffer before writing
+        pthread_mutex_lock(&buffer_mutex);
+
+        if (frame_count < MAX_FRAMES) {
+            frame_buffer[frame_count] = f;
+            frame_count++;
+        }
+
+        pthread_mutex_unlock(&buffer_mutex);
+
+        seq++;
+    }
+
+    printf("[Receiver] Thread stopped\n");
+    return NULL;
+}
+
+// ── Thread 2: Write frames to file ───────────────────
+void *writer_thread(void *arg) {
+    printf("[Writer] Thread started\n");
+
+    FILE *f = fopen("thread_log.txt", "w");
+    if (!f) {
+        perror("Failed to open log file");
+        return NULL;
+    }
+
+    fprintf(f, "timestamp    ID       Data\n");
+    fprintf(f, "─────────────────────────────────\n");
+
+    while (running || frames_written < frame_count) {
+        pthread_mutex_lock(&buffer_mutex);
+
+        // Write any unwritten frames
+        while (frames_written < frame_count) {
+            Frame *fr = &frame_buffer[frames_written];
+            fprintf(f, "%-12ld 0x%03X    %s\n",
+                    fr->timestamp, fr->id, fr->data);
+            frames_written++;
+        }
+
+        pthread_mutex_unlock(&buffer_mutex);
+
+        usleep(100000);    // check every 100ms
+    }
+
+    fclose(f);
+    printf("[Writer] Thread stopped. "
+           "Wrote %d frames.\n", frames_written);
+    return NULL;
+}
+
+// ── Thread 3: Print live statistics ──────────────────
+void *stats_thread(void *arg) {
+    printf("[Stats] Thread started\n");
+
+    int last_count = 0;
+
+    while (running) {
+        sleep(2);    // print stats every 2 seconds
+
+        pthread_mutex_lock(&buffer_mutex);
+        int current = frame_count;
+        pthread_mutex_unlock(&buffer_mutex);
+
+        int rate = (current - last_count) / 2;
+        printf("[Stats] Total frames: %d  "
+               "Rate: %d frames/sec\n",
+               current, rate);
+        last_count = current;
+    }
+
+    printf("[Stats] Thread stopped\n");
+    return NULL;
+}
+
+// ── Main ─────────────────────────────────────────────
+int main() {
+    printf("=== Multithreaded CAN Logger ===\n");
+    printf("Press Ctrl+C to stop\n\n");
+
+    // Setup signal handler
+    struct sigaction sa;
+    sa.sa_handler = handle_exit;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    sigaction(SIGINT, &sa, NULL);
+
+    // Create threads
+    pthread_t receiver, writer, stats;
+
+    pthread_create(&receiver, NULL, receiver_thread, NULL);
+    pthread_create(&writer,   NULL, writer_thread,   NULL);
+    pthread_create(&stats,    NULL, stats_thread,    NULL);
+
+    printf("All threads started.\n\n");
+
+    // Wait for all threads to finish
+    pthread_join(receiver, NULL);
+    pthread_join(writer,   NULL);
+    pthread_join(stats,    NULL);
+
+    // Final summary
+    printf("\n=== Summary ===\n");
+    printf("Total frames captured: %d\n", frame_count);
+    printf("Total frames written:  %d\n", frames_written);
+    printf("Log saved to: thread_log.txt\n");
+
+    return 0;
+}
+
+gcc threads.c -o threads -lpthread
+./threads
+=== Multithreaded CAN Logger ===
+Press Ctrl+C to stop
+
+[Receiver] Thread started
+[Writer]   Thread started
+[Stats]    Thread started
+All threads started.
+
+[Stats] Total frames: 10  Rate: 5 frames/sec
+[Stats] Total frames: 20  Rate: 5 frames/sec
+[Stats] Total frames: 30  Rate: 5 frames/sec
+^C
+[Receiver] Thread stopped
+[Stats]    Thread stopped
+[Writer]   Thread stopped. Wrote 32 frames.
+
+=== Summary ===
+Total frames captured: 32
+Total frames written:  32
+Log saved to: thread_log.txt
+
+cat thread_log.txt
+
+Main thread
+│
+├── pthread_create → Receiver thread
+│                    every 200ms:
+│                    lock mutex
+│                    add frame to buffer
+│                    unlock mutex
+│
+├── pthread_create → Writer thread
+│                    every 100ms:
+│                    lock mutex
+│                    write unwritten frames to file
+│                    unlock mutex
+│
+└── pthread_create → Stats thread
+                     every 2 seconds:
+                     lock mutex
+                     read frame_count
+                     unlock mutex
+                     print stats
+
+Time ──────────────────────────────────────►
+
+Receiver:  [lock]─write─[unlock]
+Writer:                         [lock]─write─[unlock]
+Stats:             waiting...           [lock]─read─[unlock]
+
+// Define your argument struct
+typedef struct {
+    int sensor_id;
+    int interval_ms;
+} ThreadArgs;
+
+// Thread function receives it as void*
+void *sensor_thread(void *arg) {
+    ThreadArgs *args = (ThreadArgs *)arg;  // cast back
+    printf("Sensor %d, interval %dms\n",
+           args->sensor_id, args->interval_ms);
+    return NULL;
+}
+
+// Pass it when creating thread
+ThreadArgs args = {1, 100};
+pthread_create(&thread, NULL, sensor_thread, &args);
+
+
+Concept             Code
+Create thread       pthread_create(&t, NULL, func, arg)
+Wait for thread     pthread_join(t, NULL)
+Exit thread         return NULL or pthread_exit(NULL)
+Get thread ID       pthread_self()
+Initialize mutex    pthread_mutex_t m = PTHREAD_MUTEX_INITIALIZER
+Lock mutex          pthread_mutex_lock(&m)
+Unlock mutex        pthread_mutex_unlock(&m)
+Compile flag        -lpthread
+
+
+*/
