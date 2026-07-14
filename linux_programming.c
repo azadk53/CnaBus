@@ -1727,3 +1727,300 @@ Read from pipe              read(fd, buf, len)
 Close pipe end              close(fd[0]) or close(fd[1])
 Remove named pipe           unlink("/tmp/name") or rm
 */
+
+/*
+Lesson B7
+Timers and Timing
+
+Why Precise Timing Matters in Embedded Linux
+In embedded systems timing is critical:
+
+Read an IMU sensor at exactly 100 Hz (every 10ms)
+Send a CAN heartbeat frame every 500ms
+Watchdog timer — restart if no response in 2 seconds
+Measure how long an operation takes
+
+Getting timing wrong in embedded systems causes real problems — missed sensor samples, corrupted data, protocol violations.
+
+Tool        Precision       Best for
+sleep()     1 second        Long waits only
+usleep()    1 microsecond   Short delays
+nanosleep() 1 nanosecond    Precise delays
+clock_gettime() 1 nanosecond    Measuring elapsed time
+
+clock_gettime() — Measuring Time
+
+#include <time.h>
+struct timespec {
+    time_t tv_sec;    // whole seconds
+    long   tv_nsec;   // nanoseconds (0 to 999,999,999)
+};
+struct timespec ts;
+clock_gettime(CLOCK_MONOTONIC, &ts);
+
+CLOCK_MONOTONIC — always moves forward, Always use this for measuring elapsed time.
+
+struct timespec start, end;
+
+clock_gettime(CLOCK_MONOTONIC, &start);
+
+// do some work here
+do_something();
+
+clock_gettime(CLOCK_MONOTONIC, &end);
+
+// Calculate elapsed time in milliseconds
+long elapsed_ms = (end.tv_sec  - start.tv_sec)  * 1000
+                + (end.tv_nsec - start.tv_nsec) / 1000000;
+
+printf("Took %ld ms\n", elapsed_ms);
+
+struct timespec ts;
+ts.tv_sec  = 0;
+ts.tv_nsec = 10000000;   // 10ms in nanoseconds
+nanosleep(&ts, NULL);
+
+The Drift Problem
+Naive periodic loop drifts over time:
+
+while (1) {
+    do_work();      // takes some time
+    sleep_ms(10);   // sleep 10ms
+}
+
+Cycle 1: work(2ms) + sleep(10ms) = 12ms total  ← should be 10ms
+Cycle 2: work(3ms) + sleep(10ms) = 13ms total
+Cycle 3: work(2ms) + sleep(10ms) = 12ms total
+
+struct timespec next;
+clock_gettime(CLOCK_MONOTONIC, &next);   // start now
+
+while (1) {
+    do_work();
+
+    // Add exactly 10ms to the deadline
+    next.tv_nsec += 10000000;
+    if (next.tv_nsec >= 1000000000) {
+        next.tv_nsec -= 1000000000;
+        next.tv_sec++;
+    }
+
+    // Sleep until the deadline
+    clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next, NULL);
+}
+
+nano timing.c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <signal.h>
+#include <time.h>
+
+volatile int running = 1;
+void handle_exit(int sig) { running = 0; }
+
+// ── Get current time in milliseconds ─────────────────
+long get_ms() {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+// ── Get current time in microseconds ─────────────────
+long get_us() {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
+}
+
+// ── Sleep for milliseconds ────────────────────────────
+void sleep_ms(int ms) {
+    struct timespec ts;
+    ts.tv_sec  = ms / 1000;
+    ts.tv_nsec = (ms % 1000) * 1000000L;
+    nanosleep(&ts, NULL);
+}
+
+// ── Measure how long a task takes ────────────────────
+void demo_measurement() {
+    printf("=== Test 1: Measuring elapsed time ===\n");
+
+    struct timespec start, end;
+
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    sleep_ms(250);    // simulate work
+    clock_gettime(CLOCK_MONOTONIC, &end);
+
+    long elapsed = (end.tv_sec  - start.tv_sec)  * 1000
+                 + (end.tv_nsec - start.tv_nsec) / 1000000;
+
+    printf("Expected: 250ms\n");
+    printf("Measured: %ldms\n\n", elapsed);
+}
+
+// ── Show drift with naive timing ──────────────────────
+void demo_drift() {
+    printf("=== Test 2: Naive timing (shows drift) ===\n");
+    printf("Target: 100ms per cycle\n");
+
+    long start = get_ms();
+    int cycles = 5;
+
+    for (int i = 0; i < cycles; i++) {
+        long cycle_start = get_ms();
+
+        // Simulate variable work time (1-5ms)
+        sleep_ms(i + 1);
+
+        sleep_ms(100);    // fixed sleep after work
+
+        long actual = get_ms() - cycle_start;
+        printf("Cycle %d: %ldms (drift: +%ldms)\n",
+               i+1, actual, actual - 100);
+    }
+
+    long total = get_ms() - start;
+    printf("Total: %ldms (expected %dms, drift: +%ldms)\n\n",
+           total, cycles * 100, total - cycles * 100);
+}
+
+// ── Show deadline timing (no drift) ──────────────────
+void demo_deadline() {
+    printf("=== Test 3: Deadline timing (no drift) ===\n");
+    printf("Target: 100ms per cycle\n");
+
+    int cycles = 5;
+    long total_start = get_ms();
+
+    // Set first deadline to now
+    struct timespec next;
+    clock_gettime(CLOCK_MONOTONIC, &next);
+
+    for (int i = 0; i < cycles; i++) {
+        long cycle_start = get_ms();
+
+        // Simulate variable work time (1-5ms)
+        sleep_ms(i + 1);
+
+        // Advance deadline by exactly 100ms
+        next.tv_nsec += 100000000L;
+        if (next.tv_nsec >= 1000000000L) {
+            next.tv_nsec -= 1000000000L;
+            next.tv_sec++;
+        }
+
+        // Sleep until absolute deadline
+        clock_nanosleep(CLOCK_MONOTONIC,
+                        TIMER_ABSTIME, &next, NULL);
+
+        long actual = get_ms() - cycle_start;
+        printf("Cycle %d: %ldms (drift: %+ldms)\n",
+               i+1, actual, actual - 100);
+    }
+
+    long total = get_ms() - total_start;
+    printf("Total: %ldms (expected %dms, drift: %+ldms)\n\n",
+           total, cycles * 100, total - cycles * 100);
+}
+
+// ── Simulate 100Hz sensor loop ────────────────────────
+void demo_sensor_loop() {
+    printf("=== Test 4: 100Hz sensor sampling (10ms) ===\n");
+    printf("Running for 1 second...\n");
+
+    struct timespec next;
+    clock_gettime(CLOCK_MONOTONIC, &next);
+
+    int sample_count = 0;
+    long start = get_ms();
+    long max_jitter = 0;
+
+    while (get_ms() - start < 1000) {
+        long sample_time = get_ms();
+
+        // Simulate reading sensor value
+        int sensor_value = 100 + (sample_count % 50);
+        sample_count++;
+
+        // Track jitter — deviation from expected time
+        long expected = start + (sample_count * 10);
+        long jitter   = sample_time - expected;
+        if (jitter < 0) jitter = -jitter;
+        if (jitter > max_jitter) max_jitter = jitter;
+
+        // Advance deadline by 10ms
+        next.tv_nsec += 10000000L;
+        if (next.tv_nsec >= 1000000000L) {
+            next.tv_nsec -= 1000000000L;
+            next.tv_sec++;
+        }
+
+        clock_nanosleep(CLOCK_MONOTONIC,
+                        TIMER_ABSTIME, &next, NULL);
+    }
+
+    long elapsed = get_ms() - start;
+    printf("Samples collected: %d\n", sample_count);
+    printf("Elapsed time: %ldms\n", elapsed);
+    printf("Effective rate: %.1f Hz\n",
+           sample_count * 1000.0 / elapsed);
+    printf("Max jitter: %ldms\n\n", max_jitter);
+}
+
+// ── Main ─────────────────────────────────────────────
+int main() {
+    signal(SIGINT, handle_exit);
+
+    printf("=== Timing and Timers Demo ===\n\n");
+
+    demo_measurement();
+    demo_drift();
+    demo_deadline();
+    demo_sensor_loop();
+
+    printf("=== Done ===\n");
+    return 0;
+}
+
+gcc timing.c -o timing
+./timing
+
+
+=== Timing and Timers Demo ===
+
+=== Test 1: Measuring elapsed time ===
+Expected: 250ms
+Measured: 251ms
+
+=== Test 2: Naive timing (shows drift) ===
+Target: 100ms per cycle
+Cycle 1: 101ms (drift: +1ms)
+Cycle 2: 102ms (drift: +2ms)
+Cycle 3: 103ms (drift: +3ms)
+Cycle 4: 104ms (drift: +4ms)
+Cycle 5: 105ms (drift: +5ms)
+Total: 515ms (expected 500ms, drift: +15ms)
+
+=== Test 3: Deadline timing (no drift) ===
+Target: 100ms per cycle
+Cycle 1: 100ms (drift: +0ms)
+Cycle 2: 100ms (drift: +0ms)
+Cycle 3: 100ms (drift: +0ms)
+Cycle 4: 100ms (drift: +0ms)
+Cycle 5: 100ms (drift: +0ms)
+Total: 500ms (expected 500ms, drift: +0ms)
+
+=== Test 4: 100Hz sensor sampling (10ms) ===
+Running for 1 second...
+Samples collected: 100
+Elapsed time: 1001ms
+Effective rate: 99.9 Hz
+Max jitter: 1ms
+
+=== Done ===
+
+Test 2 shows drift growing — Test 3 shows deadline timing fixing it completely.
+
+
+*/
