@@ -114,7 +114,7 @@ nano device_files.c
 #include <fcntl.h>
 #include <sys/types.h>
 #include <sys/stat.h>
-
+#include <sys/sysmacros.h>
 // ── Read bytes from a device file ────────────────────
 void read_device(const char *path, int bytes) {
     int fd = open(path, O_RDONLY);
@@ -389,6 +389,23 @@ Path        Type        Purpose
 /dev/spidev0.0  char device SPI bus
 /proc/      virtual fs      kernel/process info
 /sys/       virtual fs      hardware info/control
+
+
+
+
+
+*/
+
+/*
+Lesson C2
+GPIO from Linux
+
+3.3V  ●  ● 5V
+GPIO2 ●  ● 5V
+GPIO3 ●  ● GND
+GPIO4 ●  ● GPIO14
+ GND  ●  ● GPIO15
+...
 
 
 
