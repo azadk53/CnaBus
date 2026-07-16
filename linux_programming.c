@@ -2024,3 +2024,19 @@ Test 2 shows drift growing — Test 3 shows deadline timing fixing it completely
 
 
 */
+
+/*
+Lesson B8
+Memory Management
+
+Why Memory Management Matters in Embedded Linux
+Embedded systems have limited RAM — a typical industrial controller might have 256MB or less. Poor memory management causes:
+
+Memory leaks — program slowly consumes all RAM, crashes after hours/days
+Segmentation faults — accessing memory you don't own, immediate crash
+Fragmentation — lots of small unusable memory gaps
+Stack overflow — too much local variable data
+
+
+
+*/
