@@ -404,11 +404,380 @@ GPIO from Linux
 GPIO2 ●  ● 5V
 GPIO3 ●  ● GND
 GPIO4 ●  ● GPIO14
- GND  ●  ● GPIO15
-...
+GND  ●  ● GPIO15
 
 
 
+Interface   Path    Style
+Sysfs(older)    /sys/class/gpio/    read/write text files
+Character device (modern)   /dev/gpiochip0  ioctl calls
+
+/sys/class/gpio/
+├── export          ← write pin number here to activate it
+├── unexport        ← write pin number here to deactivate it
+└── gpio4/          ← appears after exporting pin 4
+    ├── direction   ← write "in" or "out"
+    ├── value       ← write "1"/"0" or read "1"/"0"
+    └── edge        ← for interrupts: "rising", "falling", "both"
+
+Three steps to use a GPIO pin:
+# Step 1 — export the pin (activate it)
+echo 4 > /sys/class/gpio/export
+
+# Step 2 — set direction
+echo out > /sys/class/gpio/gpio4/direction
+
+# Step 3 — set value
+echo 1 > /sys/class/gpio/gpio4/value   # HIGH
+echo 0 > /sys/class/gpio/gpio4/value   # LOW
+To read an input pin:
+echo in > /sys/class/gpio/gpio4/direction
+cat /sys/class/gpio/gpio4/value   # prints 0 or 1
+When done — unexport:
+echo 4 > /sys/class/gpio/gpio unexport
+
+// Export pin
+int fd = open("/sys/class/gpio/export", O_WRONLY);
+write(fd, "4", 1);
+close(fd);
+
+// Set direction
+fd = open("/sys/class/gpio/gpio4/direction", O_WRONLY);
+write(fd, "out", 3);
+close(fd);
+
+// Set value HIGH
+fd = open("/sys/class/gpio/gpio4/value", O_WRONLY);
+write(fd, "1", 1);
+close(fd);
+
+
+Practical Program — GPIO Controller
+
+nano gpio.c
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <sys/stat.h>
+
+// ── GPIO base path ────────────────────────────────────
+#define GPIO_BASE    "/sys/class/gpio"
+#define SIM_BASE     "/tmp/gpio_sim"    // simulation path
+
+// ── Use simulation if real GPIO not available ─────────
+static int use_simulation = 0;
+
+// ── Helper: write string to file ─────────────────────
+int write_file(const char *path, const char *value) {
+    int fd = open(path, O_WRONLY);
+    if (fd < 0) {
+        return -1;
+    }
+    int n = write(fd, value, strlen(value));
+    close(fd);
+    return n;
+}
+
+// ── Helper: read string from file ────────────────────
+int read_file(const char *path, char *buf, int size) {
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) {
+        return -1;
+    }
+    int n = read(fd, buf, size - 1);
+    if (n > 0) buf[n] = '\0';
+    close(fd);
+    return n;
+}
+
+// ── Setup simulation environment ──────────────────────
+void setup_simulation(int pin) {
+    char path[128];
+
+    // Create pin directory
+    snprintf(path, sizeof(path), "%s/gpio%d", SIM_BASE, pin);
+    mkdir(SIM_BASE, 0755);
+    mkdir(path, 0755);
+
+    // Create direction file
+    char dir_path[128];
+    snprintf(dir_path, sizeof(dir_path),
+             "%s/gpio%d/direction", SIM_BASE, pin);
+    int fd = open(dir_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd >= 0) { write(fd, "in", 2); close(fd); }
+
+    // Create value file
+    char val_path[128];
+    snprintf(val_path, sizeof(val_path),
+             "%s/gpio%d/value", SIM_BASE, pin);
+    fd = open(val_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd >= 0) { write(fd, "0", 1); close(fd); }
+
+    printf("[SIM] Created simulated GPIO pin %d\n", pin);
+}
+
+// ── Export a GPIO pin ─────────────────────────────────
+int gpio_export(int pin) {
+    char path[128];
+    char pin_str[8];
+
+    snprintf(pin_str, sizeof(pin_str), "%d", pin);
+
+    if (use_simulation) {
+        setup_simulation(pin);
+        return 0;
+    }
+
+    // Check if already exported
+    snprintf(path, sizeof(path),
+             "%s/gpio%d", GPIO_BASE, pin);
+    if (access(path, F_OK) == 0) {
+        printf("[GPIO] Pin %d already exported\n", pin);
+        return 0;
+    }
+
+    snprintf(path, sizeof(path), "%s/export", GPIO_BASE);
+    if (write_file(path, pin_str) < 0) {
+        perror("gpio_export");
+        return -1;
+    }
+
+    usleep(100000);    // wait 100ms for sysfs to create files
+    printf("[GPIO] Exported pin %d\n", pin);
+    return 0;
+}
+
+// ── Unexport a GPIO pin ───────────────────────────────
+int gpio_unexport(int pin) {
+    char path[128];
+    char pin_str[8];
+
+    snprintf(pin_str, sizeof(pin_str), "%d", pin);
+
+    if (use_simulation) {
+        printf("[SIM] Unexported pin %d\n", pin);
+        return 0;
+    }
+
+    snprintf(path, sizeof(path), "%s/unexport", GPIO_BASE);
+    if (write_file(path, pin_str) < 0) {
+        perror("gpio_unexport");
+        return -1;
+    }
+
+    printf("[GPIO] Unexported pin %d\n", pin);
+    return 0;
+}
+
+// ── Set pin direction ─────────────────────────────────
+int gpio_set_direction(int pin, const char *direction) {
+    char path[128];
+    const char *base = use_simulation ? SIM_BASE : GPIO_BASE;
+
+    snprintf(path, sizeof(path),
+             "%s/gpio%d/direction", base, pin);
+
+    if (write_file(path, direction) < 0) {
+        perror("gpio_set_direction");
+        return -1;
+    }
+
+    printf("[GPIO] Pin %d direction set to '%s'\n",
+           pin, direction);
+    return 0;
+}
+
+// ── Set pin value (0 or 1) ────────────────────────────
+int gpio_write(int pin, int value) {
+    char path[128];
+    const char *base = use_simulation ? SIM_BASE : GPIO_BASE;
+
+    snprintf(path, sizeof(path),
+             "%s/gpio%d/value", base, pin);
+
+    const char *val_str = value ? "1" : "0";
+
+    if (write_file(path, val_str) < 0) {
+        perror("gpio_write");
+        return -1;
+    }
+
+    printf("[GPIO] Pin %d set to %s (%s)\n",
+           pin, val_str, value ? "HIGH" : "LOW");
+    return 0;
+}
+
+// ── Read pin value ────────────────────────────────────
+int gpio_read(int pin) {
+    char path[128];
+    char buf[4];
+    const char *base = use_simulation ? SIM_BASE : GPIO_BASE;
+
+    snprintf(path, sizeof(path),
+             "%s/gpio%d/value", base, pin);
+
+    if (read_file(path, buf, sizeof(buf)) < 0) {
+        perror("gpio_read");
+        return -1;
+    }
+
+    int value = atoi(buf);
+    printf("[GPIO] Pin %d read: %d (%s)\n",
+           pin, value, value ? "HIGH" : "LOW");
+    return value;
+}
+
+// ── Blink an LED (toggle pin repeatedly) ─────────────
+void gpio_blink(int pin, int times, int delay_ms) {
+    printf("[GPIO] Blinking pin %d  %dx  delay=%dms\n",
+           pin, times, delay_ms);
+
+    for (int i = 0; i < times; i++) {
+        gpio_write(pin, 1);
+        usleep(delay_ms * 1000);
+        gpio_write(pin, 0);
+        usleep(delay_ms * 1000);
+    }
+}
+
+// ── Check if real GPIO available ──────────────────────
+int check_gpio_available() {
+    struct stat st;
+    if (stat("/sys/class/gpio/export", &st) == 0) {
+        return 1;    // real GPIO available
+    }
+    return 0;
+}
+
+// ── Main ─────────────────────────────────────────────
+int main() {
+    printf("=== GPIO Controller ===\n\n");
+
+    // Check if real GPIO available
+    if (!check_gpio_available()) {
+        printf("Real GPIO not available (WSL2)\n");
+        printf("Running in simulation mode\n\n");
+        use_simulation = 1;
+    }
+
+    int led_pin    = 4;    // GPIO4 — LED
+    int button_pin = 17;   // GPIO17 — Button
+
+    // ── Setup LED pin as output ───────────────────────
+    printf("--- Setting up LED pin (GPIO%d) ---\n",
+           led_pin);
+    gpio_export(led_pin);
+    gpio_set_direction(led_pin, "out");
+    printf("\n");
+
+    // ── Setup button pin as input ─────────────────────
+    printf("--- Setting up button pin (GPIO%d) ---\n",
+           button_pin);
+    gpio_export(button_pin);
+    gpio_set_direction(button_pin, "in");
+    printf("\n");
+
+    // ── Control LED ───────────────────────────────────
+    printf("--- Controlling LED ---\n");
+    gpio_write(led_pin, 1);    // turn on
+    sleep(1);
+    gpio_write(led_pin, 0);    // turn off
+    sleep(1);
+    printf("\n");
+
+    // ── Read button ───────────────────────────────────
+    printf("--- Reading button ---\n");
+    int state = gpio_read(button_pin);
+    printf("Button state: %s\n\n",
+           state ? "PRESSED" : "NOT PRESSED");
+
+    // ── Blink LED 5 times ─────────────────────────────
+    printf("--- Blinking LED 5 times ---\n");
+    gpio_blink(led_pin, 5, 200);
+    printf("\n");
+
+    // ── Cleanup ───────────────────────────────────────
+    printf("--- Cleanup ---\n");
+    gpio_write(led_pin, 0);    // ensure LED is off
+    gpio_unexport(led_pin);
+    gpio_unexport(button_pin);
+
+    printf("\n=== Done ===\n");
+    return 0;
+}
+
+gcc gpio.c -o gpio
+./gpio
+
+
+=== GPIO Controller ===
+
+Real GPIO not available (WSL2)
+Running in simulation mode
+
+--- Setting up LED pin (GPIO4) ---
+[SIM] Created simulated GPIO pin 4
+[GPIO] Pin 4 direction set to 'out'
+
+--- Setting up button pin (GPIO17) ---
+[SIM] Created simulated GPIO pin 17
+[GPIO] Pin 17 direction set to 'in'
+
+--- Controlling LED ---
+[GPIO] Pin 4 set to 1 (HIGH)
+[GPIO] Pin 4 set to 0 (LOW)
+
+--- Reading button ---
+[GPIO] Pin 17 read: 0 (LOW)
+Button state: NOT PRESSED
+
+--- Blinking LED 5 times ---
+[GPIO] Blinking pin 4  5x  delay=200ms
+[GPIO] Pin 4 set to 1 (HIGH)
+[GPIO] Pin 4 set to 0 (LOW)
+[GPIO] Pin 4 set to 1 (HIGH)
+[GPIO] Pin 4 set to 0 (LOW)
+[GPIO] Pin 4 set to 1 (HIGH)
+[GPIO] Pin 4 set to 0 (LOW)
+[GPIO] Pin 4 set to 1 (HIGH)
+[GPIO] Pin 4 set to 0 (LOW)
+[GPIO] Pin 4 set to 1 (HIGH)
+[GPIO] Pin 4 set to 0 (LOW)
+
+--- Cleanup ---
+[GPIO] Pin 4 set to 0 (LOW)
+[SIM] Unexported pin 4
+[SIM] Unexported pin 17
+
+=== Done ===
+
+Check the simulated files were created:
+ls /tmp/gpio_sim/
+cat /tmp/gpio_sim/gpio4/direction
+cat /tmp/gpio_sim/gpio4/value
+
+access() — Check if File Exists
+if (access(path, F_OK) == 0) {
+    // file exists
+}
+
+F_OK checks existence. Other flags:
+
+R_OK — readable
+W_OK — writable
+X_OK — executable
+
+snprintf() — Safe String Formatting
+char path[128];
+snprintf(path, sizeof(path),
+         "%s/gpio%d/value", base, pin);
+
+usleep(100000);    // sleep 100ms (100,000 microseconds)
+usleep(200000);    // sleep 200ms
 
 
 */
